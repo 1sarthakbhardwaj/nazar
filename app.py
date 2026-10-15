@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""ShopCam Alert: an AI camera that watches any video source and messages you when something goes wrong.
+"""Nazar: an AI camera that watches any video source and messages you when something goes wrong.
 
 Dashboard (demo and live):
   python3 app.py --source clip.mp4 --start 12 --end 30    play just that part of a clip
   python3 app.py --source 0                               your webcam
   python3 app.py --source rtsp://user:pass@cam/stream     a CCTV camera
-  python3 app.py --rehearsal ...                          fake alerts, no AI calls (practise for free)
+  python3 app.py --profile shop --source ...              what to watch for (see ai.PROFILES)
   python3 app.py --source rtsp://... --headless           no dashboard, alerts only (for a server)
 
 Tools:
@@ -53,7 +53,7 @@ WEB = config.ROOT / "web"
 
 def make_handler(engine):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "ShopCam/2.0"
+        server_version = "Nazar/1.0"
 
         def log_message(self, *args):
             pass
@@ -153,9 +153,8 @@ def make_handler(engine):
 
 
 def serve(args):
-    if not args.rehearsal and not config.OPENROUTER_KEY:
-        print("OPENROUTER_API_KEY is missing. Copy .env.example to .env and add your key,\n"
-              "or add --rehearsal to practise without AI calls.")
+    if not config.OPENROUTER_KEY:
+        print("OPENROUTER_API_KEY is missing. Copy .env.example to .env and add your key.")
         return 1
     try:
         src = Source(args.source, args.start, args.end, args.loop)
@@ -167,18 +166,17 @@ def serve(args):
         else:
             print("Get the demo clips first: python3 app.py fetch")
         return 1
-    engine = Engine(src, rehearsal=args.rehearsal, headless=args.headless)
+    engine = Engine(src, headless=args.headless)
     if args.trigger:
         engine.trigger = args.trigger
     span = f" ({src.start:g}s to {src.end:g}s)" if src.kind == "file" and src.end else (f" (from {src.start:g}s)" if src.start else "")
-    print(f"\n  \033[1m{config.APP_NAME.upper()}\033[0m  ·  " + ("\033[33mREHEARSAL, no AI calls\033[0m" if args.rehearsal else "\033[32mlive\033[0m"))
+    print(f"\n  \033[1m{config.APP_NAME.upper()}\033[0m")
     print(f"  Watching   {config.CAMERA} · {ai.PROFILE_NAME} pack: {', '.join(ai.TITLES[k] for k in ai.PROFILE['rules'])}")
     print(f"  Source     {src.name}{span}")
     print(f"  Model      {config.MODEL} · sends {'video clips' if config.AI_INPUT == 'video' else '4-frame sheets'}")
-    if not args.rehearsal:
-        q = ai.free_quota(max_age=0)
-        left = f" · OpenRouter: {q['remaining']} free calls left today" if q and q.get("remaining") is not None else ""
-        print(f"  Budget     {ai.used_today()}/{config.DAILY_CAP} calls used today{left}")
+    q = ai.free_quota(max_age=0)
+    left = f" · OpenRouter: {q['remaining']} free calls left today" if q and q.get("remaining") is not None else ""
+    print(f"  Budget     {ai.used_today()}/{config.DAILY_CAP} calls used today{left}")
     print(f"  Alerts     {', '.join(config.ALERTS) or 'none'}")
     engine.start()
     if args.headless:
@@ -262,25 +260,26 @@ def cmd_once(args):
     else:
         frames = clip[-int(config.CLIP_FPS * (config.PRE_ROLL + config.POST_ROLL)):]
         t0 = frames[0][0]
-    res, kind, sheet_path, clip_path = judge(frames, t0, config.CAMERA, args.rehearsal)
+    res, kind, sheet_path, clip_path = judge(frames, config.CAMERA)
     record = {"at": datetime.now().isoformat(timespec="seconds"), "source": src.name, "trigger": "once",
               "from": round(frames[0][0], 1), "to": round(frames[-1][0], 1), "input": kind, "sheet": str(sheet_path),
-              "clip": str(clip_path) if clip_path else None, "rehearsal": args.rehearsal, "ok": res["ok"]}
+              "clip": str(clip_path) if clip_path else None, "ok": res["ok"]}
     if not res["ok"]:
         record.update(error=res["error"], message=res["message"])
         log_verdict(record)
         if res["error"] == "daily_cap":
             print(res["message"], file=sys.stderr)
             return 0
-        print(f"⚠️ ShopCam couldn't check {config.CAMERA}: {res['message']}")
+        print(f"⚠️ {config.APP_NAME} couldn't check {config.CAMERA}: {res['message']}")
         return 0
     v = res["verdict"]
     is_alert = v["alert"] and v["confidence"] >= config.MIN_CONF
     incident_t = v["t"] if frames[0][0] - 1 <= v["t"] <= frames[-1][0] + 1 else t0
-    record.update(verdict=v, alert=is_alert, latency=res["latency"])
+    record.update(verdict=v, alert=is_alert, latency=res["latency"], profile=ai.PROFILE_NAME,
+                  title=ai.TITLES.get(v["rule"], ai.TITLES["other"]))
     if is_alert:
         a = {**v, "t": incident_t, "origin": src.origin if src.live else None, "camera": config.CAMERA,
-             "after": max(0.0, frames[-1][0] - incident_t) + res["latency"], "call": res["call"], "rehearsal": args.rehearsal}
+             "after": max(0.0, frames[-1][0] - incident_t) + res["latency"], "call": res["call"]}
         if args.send:
             record["deliveries"] = alerts.send(a, sheet_path, clip_path)
         print(alerts.lines(a, rich=False))
@@ -296,13 +295,14 @@ def cmd_once(args):
 def cmd_report(args):
     path = config.DATA / "verdicts.jsonl"
     rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
-    rows = [r for r in rows if r.get("at", "").startswith(date.today().isoformat()) and not r.get("rehearsal")]
+    rows = [r for r in rows if r.get("at", "").startswith(date.today().isoformat())]
     found = [r for r in rows if r.get("alert")]
     print(f"Today on {config.CAMERA}: {len(rows)} checks, {len(found)} alerts. "
           f"Nemotron calls used: {ai.used_today()}/{config.DAILY_CAP}.")
     for r in found[-5:]:
         v = r["verdict"]
-        print(f"- {r['at'][11:16]} {ai.RULES.get(v['rule'], 'INCIDENT')}: {v['why']} ({round(v['confidence'] * 100)}% sure)")
+        print(f"- {r['at'][11:16]} {r.get('title') or ai.TITLES.get(v['rule'], ai.TITLES['other'])}: {v['why']} "
+              f"({round(v['confidence'] * 100)}% sure)")
     if found:
         print(f"MEDIA:{found[-1]['sheet']}")
     return 0
@@ -434,7 +434,7 @@ def row(name, value):
 
 
 def cmd_check(args):
-    print("\n  ShopCam Alert setup check (no model calls)\n")
+    print(f"\n  {config.APP_NAME} setup check (no model calls)\n")
     row("Settings file", config.ENV_PATH.name if config.ENV_PATH.exists() else "missing: run `cp .env.example .env` and fill it in")
     row("ffmpeg", ffmpeg_exe() or "missing (needed for video clips): brew install ffmpeg")
     status, body, _ = http("GET", f"{ai.OPENROUTER}/models/{config.MODEL}/endpoints", timeout=10)
@@ -456,7 +456,7 @@ def cmd_check(args):
         row("Telegram bot", f"@{me['username']}" if ok else f"rejected: {me}")
         if ok and config.TELEGRAM_CHAT_ID:
             ok, info = alerts.telegram("sendMessage", {"chat_id": config.TELEGRAM_CHAT_ID,
-                                                        "text": "✅ ShopCam Alert check: alerts will arrive here."})
+                                                        "text": f"✅ {config.APP_NAME} test: alerts will arrive here."})
             row("Telegram chat", f"{config.TELEGRAM_CHAT_ID} · test message sent" if ok else f"failed: {info}")
         elif ok:
             row("Telegram chat", "missing: run `python3 app.py telegram`")
@@ -499,7 +499,7 @@ def cmd_telegram(args):
         return 1
     config.write_env("TELEGRAM_CHAT_ID", str(chat["id"]))
     config.TELEGRAM_CHAT_ID = str(chat["id"])
-    alerts.telegram("sendMessage", {"chat_id": chat["id"], "text": "✅ ShopCam Alert is connected. Incident alerts will arrive here."})
+    alerts.telegram("sendMessage", {"chat_id": chat["id"], "text": f"✅ {config.APP_NAME} is connected. Alerts will arrive here."})
     print(f"Connected to {chat.get('first_name') or chat.get('title') or chat['id']} (chat id {chat['id']}). "
           "Saved it in {config.ENV_PATH.name} and sent you a test message.")
     return 0
@@ -523,7 +523,7 @@ def cmd_smoke(args):
         return 1
     print(f"Sending {'a video clip' if config.AI_INPUT == 'video' else '4 frames'} of {src.name} "
           f"({clip[0][0]:.1f}s to {clip[-1][0]:.1f}s) to {config.MODEL}…")
-    res, kind, sheet_path, _ = judge(clip, clip[0][0], config.CAMERA)
+    res, kind, sheet_path, _ = judge(clip, config.CAMERA)
     if not res["ok"]:
         msg = res["message"]
         print(f"Failed ({res.get('status', '')}): {msg}")
@@ -542,7 +542,7 @@ def cmd_smoke(args):
 
 
 def cmd_hermes(args):
-    """Install the ShopCam skill and cron script into Hermes Agent, and print the remaining steps."""
+    """Install the Nazar skill and cron script into Hermes Agent, and print the remaining steps."""
     home = Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser()
     if not home.exists():
         print("Hermes Agent isn't installed yet (no ~/.hermes). Install it first:\n"
@@ -557,28 +557,29 @@ def cmd_hermes(args):
     if "://" not in source and not source.isdigit():
         source = str(Path(source).expanduser().resolve())
     values = {"{{PYTHON}}": sys.executable, "{{APP}}": str(config.ROOT / "app.py"), "{{SOURCE}}": source,
-              "{{CAMERA}}": config.CAMERA}
+              "{{CAMERA}}": config.CAMERA, "{{PROFILE}}": ai.PROFILE_NAME,
+              "{{RULES}}": ", ".join(ai.TITLES[k].lower() for k in ai.PROFILE["rules"])}
 
     def fill(text):
         for k, v in values.items():
             text = text.replace(k, v)
         return text
 
-    skill_dir = home / "skills" / "shopcam"
+    skill_dir = home / "skills" / "nazar"
     skill_dir.mkdir(parents=True, exist_ok=True)
-    (skill_dir / "SKILL.md").write_text(fill((config.ROOT / "hermes" / "skills" / "shopcam" / "SKILL.md").read_text()))
-    script = home / "scripts" / "shopcam_check.py"
+    (skill_dir / "SKILL.md").write_text(fill((config.ROOT / "hermes" / "skills" / "nazar" / "SKILL.md").read_text()))
+    script = home / "scripts" / "nazar_check.py"
     script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text(fill((config.ROOT / "hermes" / "scripts" / "shopcam_check.py").read_text()))
+    script.write_text(fill((config.ROOT / "hermes" / "scripts" / "nazar_check.py").read_text()))
     script.chmod(0o755)
     print(f"""
 Installed into Hermes:
-  skill   {skill_dir}/SKILL.md     (ask Hermes on Telegram: "check the shop camera", "any alerts today?")
+  skill   {skill_dir}/SKILL.md     (ask Hermes on Telegram: "check the camera", "any alerts today?")
   script  {script}
 
 Three steps left:
 
-1. Turn on the Hermes webhook, so ShopCam can hand alerts to Hermes. Add to {home}/.env:
+1. Turn on the Hermes webhook, so Nazar can hand alerts to Hermes. Add to {home}/.env:
      WEBHOOK_ENABLED=true
      WEBHOOK_PORT=8644
    and add this route to {home}/config.yaml (merge it with any platforms: you already have):
@@ -588,18 +589,18 @@ Three steps left:
          extra:
            port: 8644
            routes:
-             shopcam:
+             nazar:
                secret: "{secret}"
                deliver: "telegram"
                deliver_only: true
                prompt: "{{text}}"
    Then restart the gateway: hermes gateway
 
-2. Send ShopCam alerts through Hermes: in this folder's .env set
+2. Send Nazar alerts through Hermes: in this folder's .env set
      ALERTS=hermes            (or ALERTS=telegram,hermes to get both)
 
 3. Optional, a check every 15 minutes even when nobody is watching the dashboard:
-     hermes cron create "every 15m" --no-agent --script shopcam_check.py --deliver telegram --name shopcam
+     hermes cron create "every 15m" --no-agent --script nazar_check.py --deliver telegram --name nazar
    It stays silent unless Nemotron sees an incident. Each look that sees motion uses 1 free call.
 
 Camera used by the skill and the cron job: {source}
@@ -610,17 +611,16 @@ Camera used by the skill and the cron job: {source}
 # ------------------------------------------------------------------ main
 
 def main():
-    p = argparse.ArgumentParser(description="ShopCam Alert: AI shop camera alerts with Nemotron (free).",
+    p = argparse.ArgumentParser(description="Nazar: AI camera alerts with NVIDIA Nemotron (free).",
                                 formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     p.add_argument("command", nargs="?", default="serve",
                    choices=["serve", "fetch", "find", "once", "report", "check", "telegram", "smoke", "hermes"])
     p.add_argument("--source", default=config.SOURCE, help="video file, webcam index (0) or stream URL")
-    p.add_argument("--profile", choices=list(ai.PROFILES), help="what to watch for: home, shop, exam or traffic")
+    p.add_argument("--profile", choices=list(ai.PROFILES), help="what to watch for: " + ", ".join(ai.PROFILES))
     p.add_argument("--camera", help="camera name shown in the dashboard and alerts")
     p.add_argument("--start", type=float, default=0, help="files: start at this second")
     p.add_argument("--end", type=float, help="files: stop at this second")
     p.add_argument("--loop", action="store_true", help="files: loop the part between --start and --end")
-    p.add_argument("--rehearsal", action="store_true", help="fake alerts, no AI calls")
     p.add_argument("--headless", action="store_true", help="no dashboard, watch and alert only")
     p.add_argument("--no-open", action="store_true", help="don't open the browser")
     p.add_argument("--port", type=int, default=config.PORT)

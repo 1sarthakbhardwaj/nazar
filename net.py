@@ -1,5 +1,6 @@
 """A tiny HTTP client on the standard library."""
 import json
+import uuid
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
@@ -36,7 +37,7 @@ def error_text(body, status):
 
 def multipart(fields, file_field, filename, content, mime):
     """Encode form fields plus one file for multipart/form-data. Returns (body, content type)."""
-    boundary = "shopcam" + __import__("uuid").uuid4().hex
+    boundary = "nazar" + uuid.uuid4().hex
     parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
              for k, v in fields.items()]
     parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'

@@ -28,11 +28,10 @@ def telegram(method, fields, file=None, timeout=30):
 
 
 def lines(a, rich):
-    """a: dict with rule, why, after, camera, rehearsal. Short and human: what, where, when."""
+    """a: dict with rule, why, after, camera. Short and human: what, where, when."""
     esc = html.escape if rich else (lambda s: s)
     bold = (lambda s: f"<b>{s}</b>") if rich else (lambda s: s)
-    out = ["🧪 Rehearsal, not a real alert"] if a["rehearsal"] else []
-    out.append(f"🚨 {bold(ai.TITLES.get(a['rule'], ai.TITLES['other']))} · {esc(a['camera'])}")
+    out = [f"🚨 {bold(ai.TITLES.get(a['rule'], ai.TITLES['other']))} · {esc(a['camera'])}"]
     if a["why"]:
         out.append(f"“{esc(a['why'])}”")
     now = datetime.now().strftime("%I:%M %p").lstrip("0")
@@ -59,7 +58,7 @@ def to_hermes(a, sheet_path):
     text = lines(a, rich=False)
     if config.HERMES_MEDIA:
         text += f"\nMEDIA:{sheet_path.resolve()}"
-    body = json.dumps({"event": "shopcam_alert", "text": text, "rule": a["rule"], "why": a["why"],
+    body = json.dumps({"event": "nazar_alert", "text": text, "rule": a["rule"], "why": a["why"],
                        "confidence": a["confidence"], "camera": a["camera"], "image": str(sheet_path.resolve())})
     ts = str(int(time.time()))
     sig = hmac.new(config.HERMES_WEBHOOK_SECRET.encode(), f"{ts}.{body}".encode(), hashlib.sha256).hexdigest()

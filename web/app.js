@@ -54,7 +54,7 @@ function applyStatus(s) {
   $("live").classList.toggle("hidden", s.source.kind === "file");
   $("dSource").textContent = s.source.name + (s.source.start ? ` from ${s.source.start}s` : "");
   $("dModel").textContent = `${s.model} · ${s.input}`;
-  $("dQuota").textContent = s.mode === "rehearsal" ? "rehearsal" : `${s.used}/${s.cap}` + (s.free && s.free.remaining != null ? ` · ${s.free.remaining} free left` : "");
+  $("dQuota").textContent = `${s.used}/${s.cap}` + (s.free && s.free.remaining != null ? ` · ${s.free.remaining} free left` : "");
   if (document.activeElement !== $("sens")) {
     $("sens").value = s.trigger;
     $("sensVal").textContent = `${s.trigger}%`;
@@ -229,7 +229,7 @@ function toggleMonitoring() {
   S.lastToggle = now;
   unlockAudio();
   if (S.armed) return post("disarm");
-  if (S.status.mode === "live" && !S.status.key_set) return toast("Add your OpenRouter key first");
+  if (!S.status.key_set) return toast("Add your OpenRouter key first");
   clearAlert();
   post("arm");
 }

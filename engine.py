@@ -181,19 +181,14 @@ def prepare(frames):
             "times": [round(frames[0][0], 1), round(frames[-1][0], 1)]}
 
 
-def ask_model(p, t0, camera, rehearsal=False):
-    if rehearsal:
-        time.sleep(1.4)
-        return {"ok": True, "latency": 1.4, "call": 0, "verdict": {
-            "alert": True, "rule": "liquid_on_floor", "t": round(t0, 1), "confidence": 0.9,
-            "why": "Rehearsal: fake alert, no AI call was made"}}
+def ask_model(p, camera):
     return ai.check(p["clip"] if p["kind"] == "video" else p["model_sheet"], p["kind"], p["times"], camera)
 
 
-def judge(frames, t0, camera, rehearsal=False):
+def judge(frames, camera):
     """Prepare and ask in one go. -> (result, kind, sheet_path, clip_path)."""
     p = prepare(frames)
-    return ask_model(p, t0, camera, rehearsal), p["kind"], p["sheet_path"], p["clip_path"]
+    return ask_model(p, camera), p["kind"], p["sheet_path"], p["clip_path"]
 
 
 def log_verdict(record):
@@ -212,9 +207,9 @@ def say(text, kind=""):
 # ------------------------------------------------------------------ the live loop
 
 class Engine(threading.Thread):
-    def __init__(self, source, rehearsal=False, headless=False):
+    def __init__(self, source, headless=False):
         super().__init__(daemon=True)
-        self.src, self.rehearsal, self.headless = source, rehearsal, headless
+        self.src, self.headless = source, headless
         self.trigger = config.MOTION_TRIGGER
         self.max_per_arm = 10 ** 9 if headless else config.MAX_PER_ARM
         self.armed = headless                      # a headless run watches from the start
@@ -224,7 +219,7 @@ class Engine(threading.Thread):
         self.cooldown_until = SETTLE
         self.t, self.motion = source.start, 0.0
         self.small = deque()                       # (t, tiny grey frame) for the motion check
-        self.clip = deque()                        # (t, 640px frame with the time burned in)
+        self.clip = deque()                        # (t, 640px frame) for clips and sheets
         self.next_motion_t = self.next_clip_t = None
         self.event, self.wall0, self.vt0 = None, None, 0.0
         self.pending_t = None                      # motion seen while Nemotron was busy, checked next
@@ -261,11 +256,11 @@ class Engine(threading.Thread):
 
     def status(self):
         s = self.src
-        return {"type": "status", "mode": "rehearsal" if self.rehearsal else "live", "model": config.MODEL_LABEL,
-                "app": config.APP_NAME, "profile": ai.PROFILE_NAME, "camera": config.CAMERA, "brand": config.BRAND, "input": config.AI_INPUT, "alerts": config.ALERTS,
+        return {"type": "status", "app": config.APP_NAME, "model": config.MODEL_LABEL, "profile": ai.PROFILE_NAME,
+                "camera": config.CAMERA, "input": config.AI_INPUT, "alerts": config.ALERTS,
                 "source": {"kind": s.kind, "name": s.name, "start": s.start, "end": s.end},
                 "origin": s.origin if s.live else None, "used": ai.used_today(), "cap": config.DAILY_CAP,
-                "free": None if self.rehearsal else ai._free["value"], "trigger": self.trigger,
+                "free": ai._free["value"], "trigger": self.trigger,
                 "max_per_arm": config.MAX_PER_ARM, "armed": self.armed, "phase": self.phase, "playing": self.playing,
                 "key_set": bool(config.OPENROUTER_KEY)}
 
@@ -296,7 +291,7 @@ class Engine(threading.Thread):
         self.emit("status", **{k: v for k, v in self.status().items() if k != "type"})
 
     def _quota_loop(self):
-        while not self.rehearsal:
+        while True:
             ai.free_quota(max_age=50)
             self.emit_status()
             time.sleep(60)
@@ -406,13 +401,12 @@ class Engine(threading.Thread):
         p = prepare(frames)
         kind, sheet_path, clip_path = p["kind"], p["sheet_path"], p["clip_path"]
         what = f"a {seconds:.0f}s clip" if kind == "video" else "4 frames"
-        self.emit("sheet", url=f"/data/sheets/{sheet_path.name}", kind=kind, seconds=round(seconds, 1),
-                  rehearsal=self.rehearsal)
-        self.log(f"Rehearsal: {what}, no AI call" if self.rehearsal else f"Sent {what} to Nemotron", "ask")
-        res = ask_model(p, ev["t0"], config.CAMERA, self.rehearsal)
+        self.emit("sheet", url=f"/data/sheets/{sheet_path.name}", kind=kind, seconds=round(seconds, 1))
+        self.log(f"Sent {what} to Nemotron", "ask")
+        res = ask_model(p, config.CAMERA)
         record = {"at": datetime.now().isoformat(timespec="seconds"), "source": self.src.name, "trigger": ev["trigger"],
                   "from": round(frames[0][0], 1), "to": round(frames[-1][0], 1), "input": kind,
-                  "sheet": str(sheet_path), "clip": str(clip_path) if clip_path else None, "rehearsal": self.rehearsal}
+                  "sheet": str(sheet_path), "clip": str(clip_path) if clip_path else None}
         cooldown, disarm_reason = config.COOLDOWN_CLEAR, None
         if not res["ok"]:
             self.log(res["message"], "error")
@@ -430,10 +424,11 @@ class Engine(threading.Thread):
             after = max(0.0, time.time() - (self.frame_wall - (self.t - incident_t)))
             is_alert = v["alert"] and v["confidence"] >= config.MIN_CONF
             label = ai.RULES.get(v["rule"], "INCIDENT")
-            record.update(ok=True, verdict=v, alert=is_alert, latency=res["latency"], after=round(after, 1))
+            record.update(ok=True, verdict=v, alert=is_alert, latency=res["latency"], after=round(after, 1),
+                          profile=ai.PROFILE_NAME, title=ai.TITLES.get(v["rule"], ai.TITLES["other"]))
             if is_alert:
                 a = {**v, "t": incident_t, "origin": self.src.origin if self.src.live else None, "after": after,
-                     "camera": config.CAMERA, "call": res["call"], "rehearsal": self.rehearsal}
+                     "camera": config.CAMERA, "call": res["call"]}
                 deliveries = alerts.send(a, sheet_path, clip_path)
                 record["deliveries"] = deliveries
                 self.emit("alert", rule=v["rule"], label=label, title=ai.TITLES.get(v["rule"], ai.TITLES["other"]),
@@ -464,8 +459,8 @@ class Engine(threading.Thread):
     def _cmd_arm(self):
         if self.armed:
             return
-        if not self.rehearsal and not config.OPENROUTER_KEY:
-            return self.log("Add OPENROUTER_API_KEY to .env, or run with --rehearsal", "error")
+        if not config.OPENROUTER_KEY:
+            return self.log("Add OPENROUTER_API_KEY to .env first", "error")
         if self.src.kind == "file":
             if self.ended:
                 self._restart_file()
@@ -490,7 +485,7 @@ class Engine(threading.Thread):
     def _cmd_check(self):
         if self.phase in ("analyzing", "collecting"):
             return
-        if not self.rehearsal and not config.OPENROUTER_KEY:
+        if not config.OPENROUTER_KEY:
             return self.log("Add OPENROUTER_API_KEY to .env first", "error")
         if not self.clip:
             return self.log("Nothing recorded yet. Play the video first.", "error")

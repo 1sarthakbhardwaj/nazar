@@ -49,7 +49,6 @@ SOURCE = env("SOURCE", "0")                    # file path, webcam index (0) or 
 APP_NAME = env("APP_NAME", "Nazar")
 PROFILE = env("PROFILE", "home")               # home | shop | exam | traffic: what the camera watches for
 CAMERA = env("CAMERA_NAME", "")                # empty = the profile's default name (Living Room, Aisle 3, ...)
-BRAND = env("BRAND", "@nomadev.ai")
 PORT = int(env("PORT", "8765"))
 
 # detection
@@ -66,6 +65,6 @@ ALERTS = [a.strip() for a in env("ALERTS", "telegram").split(",") if a.strip()] 
 TELEGRAM_BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = env("TELEGRAM_CHAT_ID", "")
 ALERT_MEDIA = env("ALERT_MEDIA", "photo")            # photo: the 4-frame sheet | video: the clip
-HERMES_WEBHOOK_URL = env("HERMES_WEBHOOK_URL", "http://localhost:8644/webhooks/shopcam")
+HERMES_WEBHOOK_URL = env("HERMES_WEBHOOK_URL", "http://localhost:8644/webhooks/nazar")
 HERMES_WEBHOOK_SECRET = env("HERMES_WEBHOOK_SECRET", "")
 HERMES_MEDIA = env("HERMES_MEDIA", "1") != "0"       # add a MEDIA:/path line so Hermes attaches the frames

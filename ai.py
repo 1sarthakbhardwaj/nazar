@@ -12,6 +12,7 @@ from net import error_text, http
 OPENROUTER = "https://openrouter.ai/api/v1"
 
 # Scenario packs: the same camera loop, different things to watch for. rule -> (title, what counts)
+FIRE = ("Smoke or fire", "smoke or flames are visible")
 PROFILES = {
     "home": {
         "camera": "Living Room",
@@ -19,37 +20,50 @@ PROFILES = {
                    "the family must be alerted.",
         "rules": {
             "person_fell": ("Fall detected", "a person fell and stays down, or is lying on the floor unable to get up"),
+            "needs_help": ("Needs help", "a person waves for help, clutches their chest or head in pain, or cannot "
+                           "get up from a chair or bed"),
             "object_fell": ("Something fell", "something fell, broke or shattered"),
             "liquid_on_floor": ("Spill on the floor", "liquid is spilled or spreading on the floor (slip risk)"),
-            "smoke_or_fire": ("Smoke or fire", "smoke or flames are visible"),
+            "smoke_or_fire": FIRE,
         },
-        "normal": "Walking, sitting, cooking, cleaning, and lying down on a bed or sofa to rest are not incidents.",
+        "normal": "Walking, sitting, cooking, cleaning, exercising, and lying down on a bed or sofa to rest are not "
+                  "incidents.",
     },
     "shop": {
         "camera": "Aisle 3",
         "context": "You watch a CCTV camera in a small shop, supermarket or warehouse and decide whether the owner "
                    "must be alerted.",
         "rules": {
-            "object_fell": ("Item broke", "a product, glass, bottle or jar fell, broke or shattered, or a shelf or stack fell"),
+            "object_fell": ("Item broke", "a product, glass, bottle or jar fell, broke or shattered, or a shelf or "
+                            "stack fell"),
             "liquid_on_floor": ("Spill on the floor", "liquid is spilled or spreading on the floor (slip risk)"),
             "person_fell": ("Person fell", "a person fell and stays down"),
-            "robbery_or_theft": ("Possible theft", "someone hides goods in clothes or a bag, grabs and runs, or forces a till or door"),
+            "shoplifting": ("Possible shoplifting", "someone hides goods in clothes or a bag instead of a basket, or "
+                            "walks out with unpaid goods"),
+            "robbery": ("Robbery", "someone threatens staff, forces the till, or grabs goods and runs"),
             "fight": ("Fight", "people are fighting"),
-            "vandalism": ("Damage", "glass, a door or fixtures are being damaged on purpose"),
+            "vandalism": ("Damage", "glass, a door, shelves or fixtures are damaged on purpose"),
+            "long_queue": ("Long queue", "more than five people are waiting in line at the counter"),
+            "smoke_or_fire": FIRE,
         },
-        "normal": "Shopping, picking up and putting back items, walking, restocking and cleaning are not incidents.",
+        "normal": "Shopping, picking items up and putting them back or in a basket, walking, restocking and cleaning "
+                  "are not incidents.",
     },
     "parking": {
         "camera": "Gate Camera",
         "context": "You watch a security camera outside a home or shop that covers the gate, the street and parked "
                    "vehicles, and decide whether the owner must be alerted.",
         "rules": {
-            "vehicle_theft": ("Possible car theft", "someone opens the bonnet, door or boot of a parked vehicle and works "
-                              "on it or removes parts, or breaks into it"),
-            "theft": ("Possible theft", "someone takes something that isn't theirs (a bag, parcel, bike, plant or goods) and leaves"),
+            "vehicle_theft": ("Possible car theft", "someone opens the bonnet, door or boot of a parked vehicle and "
+                              "works on it or removes parts, or breaks into it"),
+            "door_checking": ("Checking car doors", "someone tries the doors or peers into the windows of parked cars "
+                              "one after another"),
+            "theft": ("Possible theft", "someone takes something that isn't theirs (a bag, parcel, bike, plant or "
+                      "goods) and leaves"),
             "break_in": ("Break-in attempt", "someone forces or climbs a gate, door, window or lock"),
             "vandalism": ("Damage", "someone damages a vehicle or property on purpose"),
             "accident": ("Accident", "a vehicle hits something or someone"),
+            "smoke_or_fire": FIRE,
         },
         "normal": "People walking past, cars parking or driving away, deliveries, and people getting into or out of "
                   "their own car are normal. Two people arriving together, one keeping watch while another works on "
@@ -61,9 +75,11 @@ PROFILES = {
                    "check. You never decide that anyone cheated; you only point out what to look at.",
         "rules": {
             "phone_use": ("Phone in exam", "a student is looking at or using a phone or another device"),
-            "copying": ("Possible copying", "a student keeps looking at a neighbour's answer sheet, or students pass a paper or note"),
+            "copying": ("Possible copying", "a student keeps looking at a neighbour's answer sheet, or students pass "
+                        "a paper or note"),
             "hidden_notes": ("Hidden notes", "a student reads a hidden paper, notes on the hand, or notes under the desk"),
             "talking": ("Talking", "students are talking to each other"),
+            "left_seat": ("Left seat", "a student leaves their seat or walks around the hall without the invigilator"),
         },
         "normal": "Writing, thinking, stretching, glancing up or around briefly, raising a hand and talking to the "
                   "invigilator are normal.",
@@ -76,10 +92,41 @@ PROFILES = {
             "no_helmet": ("No helmet", "a rider or pillion on a two-wheeler is not wearing a helmet"),
             "triple_riding": ("Triple riding", "three or more people ride one two-wheeler"),
             "wrong_side": ("Wrong-side driving", "a vehicle drives against the flow of traffic"),
+            "phone_driving": ("Phone while driving", "a driver or rider uses a phone while moving"),
+            "on_crossing": ("Stopped on the crossing", "a vehicle stops on the zebra crossing"),
             "accident": ("Accident", "vehicles collide, or a vehicle or person falls on the road"),
         },
         "normal": "Vehicles moving with traffic, stopping at signals, and people crossing at a crossing are normal. "
                   "Do not read out number plates.",
+    },
+    "pets": {
+        "camera": "Living Room",
+        "context": "You watch a home camera that keeps an eye on a pet while the owner is out, and tell the owner "
+                   "when the pet does something they would want to know about.",
+        "rules": {
+            "on_furniture": ("On the sofa again", "the pet climbs or lies on a sofa, bed or chair"),
+            "on_counter": ("On the counter", "the pet climbs onto a kitchen counter, dining table or shelf"),
+            "chewing": ("Chewing something", "the pet chews shoes, cables, furniture or anything that is not its toy"),
+            "knocked_over": ("Knocked something over", "the pet knocks something off a table or shelf, or tips "
+                             "something over"),
+            "mess": ("Made a mess", "the pet pees or poops indoors, or tears up cushions, paper or plants"),
+        },
+        "normal": "Walking around, playing with its own toys, eating or drinking from its bowl, and sleeping in its "
+                  "own bed are normal.",
+    },
+    "site": {
+        "camera": "Site Gate",
+        "context": "You watch a camera on a construction site or factory floor and flag safety problems for the "
+                   "supervisor.",
+        "rules": {
+            "no_hard_hat": ("No hard hat", "a worker on site is not wearing a hard hat"),
+            "no_vest": ("No safety vest", "a worker is not wearing a high-visibility vest"),
+            "danger_zone": ("Danger zone", "a person is very close to moving machinery or a vehicle, or under a "
+                            "suspended load"),
+            "person_fell": ("Person fell", "a worker falls, or is lying on the ground"),
+            "smoke_or_fire": FIRE,
+        },
+        "normal": "Workers walking, carrying material, and operating machines while wearing protective gear are normal.",
     },
 }
 
@@ -128,7 +175,7 @@ set_profile(config.PROFILE)
 
 
 def auth():
-    return {"Authorization": f"Bearer {config.OPENROUTER_KEY}", "X-Title": "ShopCam Alert"}
+    return {"Authorization": f"Bearer {config.OPENROUTER_KEY}", "X-Title": "Nazar"}
 
 
 # ---------------------------------------------------------------- daily budget
