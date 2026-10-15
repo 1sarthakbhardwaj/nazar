@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+data/
+clips/
+__pycache__/
+*.pyc
+.DS_Store
+# dataset footage stays private (MSAD terms)
+datasets/
+.claude/

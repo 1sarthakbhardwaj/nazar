@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nazar</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app" class="wide">
+  <div class="glow" aria-hidden="true"></div>
+
+  <header class="top">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+        <defs>
+          <linearGradient id="eye" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#7dd3fc"/><stop offset="1" stop-color="#a78bfa"/>
+          </linearGradient>
+        </defs>
+        <path d="M2.5 16C6 10 10.6 7 16 7s10 3 13.5 9C26 22 21.4 25 16 25S6 22 2.5 16Z" fill="none" stroke="url(#eye)" stroke-width="2.2" stroke-linejoin="round"/>
+        <circle cx="16" cy="16" r="5.2" fill="url(#eye)"/>
+        <circle cx="17.8" cy="14.2" r="1.6" fill="#fff" opacity=".9"/>
+      </svg>
+      <span id="appName">Nazar</span>
+    </div>
+    <span class="sep"></span>
+    <div class="room" id="roomName">Living Room</div>
+    <div class="spacer"></div>
+    <button id="monitor" class="monitor" aria-pressed="false">
+      <span class="switch"><span class="knob"></span></span>
+      <span class="monitor-text">Monitoring</span>
+    </button>
+    <div class="clock" id="clock">--:--</div>
+  </header>
+
+  <main>
+    <section class="stage">
+      <div class="feed" id="feed">
+        <img id="stream" alt="">
+        <div class="shade" aria-hidden="true"></div>
+        <div class="live hidden" id="live"><i></i>LIVE</div>
+        <div class="chip tone-idle" id="chip"><i></i><span id="chipText">Paused</span></div>
+        <div class="empty" id="empty"><div class="spinner"></div><span>Connecting to camera</span></div>
+
+        <div class="alert-card hidden" id="alert" role="alert">
+          <div class="alert-top">
+            <div class="alert-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 3.5 22 20.5H2L12 3.5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="17.3" r="1.2" fill="currentColor"/></svg>
+            </div>
+            <div class="alert-heading">
+              <div class="alert-title" id="alertTitle">Fall detected</div>
+              <div class="alert-sub" id="alertSub">Living Room</div>
+            </div>
+            <div class="alert-speed"><b id="alertSpeed">–</b><span>to alert</span></div>
+          </div>
+          <div class="alert-why" id="alertWhy"></div>
+          <div class="alert-foot">
+            <span class="sent hidden" id="alertSent">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.5 4.3 2.9 11.5c-1.3.5-1.3 1.2-.2 1.6l4.8 1.5 1.8 5.6c.2.6.4.8.9.8.4 0 .6-.2.9-.5l2.3-2.2 4.7 3.5c.9.5 1.5.2 1.7-.8l3.1-14.6c.3-1.3-.5-1.9-1.4-1.6zM9.6 14.1l8.9-5.6c.4-.3.8-.1.5.2l-7.6 6.9-.3 3.2-1.5-4.7z"/></svg>
+              <span id="alertSentText">Sent to your phone</span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="side">
+      <div class="card status-card">
+        <div class="status-line"><span class="status-dot tone-idle" id="statusDot"></span><span class="status-big" id="statusBig">Paused</span></div>
+        <div class="status-sub" id="statusSub">Monitoring is off</div>
+        <div class="stats">
+          <div class="stat"><b id="statReviewed">0</b><span>Reviewed</span></div>
+          <div class="stat"><b id="statAlerts">0</b><span>Alerts</span></div>
+          <div class="stat"><b id="statSpeed">–</b><span>Alert time</span></div>
+        </div>
+      </div>
+
+      <div class="card moment-card hidden" id="momentCard">
+        <div class="card-title"><span id="momentTitle">Reviewing this moment</span></div>
+        <div class="moment">
+          <img id="momentImg" alt="">
+          <div class="sweep hidden" id="sweep"></div>
+        </div>
+      </div>
+
+      <div class="card timeline-card">
+        <div class="card-title">Today</div>
+        <ol class="timeline" id="timeline"><li class="none" id="none">Nothing yet today</li></ol>
+      </div>
+
+      <div class="powered">Powered by <b>NVIDIA Nemotron</b></div>
+    </aside>
+  </main>
+
+  <div class="drawer hidden" id="drawer">
+    <div class="drawer-head"><b>Developer</b><span>press D to close</span></div>
+    <div class="drawer-grid">
+      <div><label>Source</label><span id="dSource">–</span></div>
+      <div><label>Model</label><span id="dModel">–</span></div>
+      <div><label>Calls today</label><span id="dQuota">–</span></div>
+      <div><label>Motion</label><span id="dMotion">0%</span></div>
+    </div>
+    <label class="d-sens">Motion trigger <input type="range" id="sens" min="0.2" max="20" step="0.1" value="0.8"> <span id="sensVal">0.8%</span></label>
+    <div class="d-buttons">
+      <button id="dCheck">Check now · C</button>
+      <button id="dReplay">Fresh take · R</button>
+      <button id="dLayout">Reel layout · V</button>
+    </div>
+    <ol class="devlog" id="devlog"></ol>
+  </div>
+
+  <div class="toast hidden" id="toast"></div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

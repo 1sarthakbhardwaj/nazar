@@ -1,0 +1,4 @@
+opencv-python>=4.9
+numpy>=1.26
+# ffmpeg must be on PATH for video clips (brew install ffmpeg), or install the bundled binary:
+# imageio-ffmpeg>=0.5
