@@ -58,7 +58,7 @@ PRE_ROLL = float(env("PRE_ROLL", "2"))               # seconds before the motion
 POST_ROLL = float(env("POST_ROLL", "4"))             # seconds after the motion (the aftermath matters)
 CLIP_FPS = float(env("CLIP_FPS", "6"))               # frames per second in the clip sent to the model
 MAX_PER_ARM = int(env("MAX_PER_ARM", "6"))           # calls per arming in the dashboard, then it disarms
-COOLDOWN_ALERT = float(env("COOLDOWN_ALERT", "12"))
+COOLDOWN_ALERT = float(env("COOLDOWN_ALERT", "45"))   # quiet time after an alert, so one incident is one alert
 COOLDOWN_CLEAR = float(env("COOLDOWN_CLEAR", "4"))
 
 # alerts

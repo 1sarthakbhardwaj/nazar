@@ -39,6 +39,22 @@ PROFILES = {
         },
         "normal": "Shopping, picking up and putting back items, walking, restocking and cleaning are not incidents.",
     },
+    "parking": {
+        "camera": "Gate Camera",
+        "context": "You watch a security camera outside a home or shop that covers the gate, the street and parked "
+                   "vehicles, and decide whether the owner must be alerted.",
+        "rules": {
+            "vehicle_theft": ("Possible car theft", "someone opens the bonnet, door or boot of a parked vehicle and works "
+                              "on it or removes parts, or breaks into it"),
+            "theft": ("Possible theft", "someone takes something that isn't theirs (a bag, parcel, bike, plant or goods) and leaves"),
+            "break_in": ("Break-in attempt", "someone forces or climbs a gate, door, window or lock"),
+            "vandalism": ("Damage", "someone damages a vehicle or property on purpose"),
+            "accident": ("Accident", "a vehicle hits something or someone"),
+        },
+        "normal": "People walking past, cars parking or driving away, deliveries, and people getting into or out of "
+                  "their own car are normal. Two people arriving together, one keeping watch while another works on "
+                  "a parked car they did not arrive in, is suspicious.",
+    },
     "exam": {
         "camera": "Exam Hall · Room 101",
         "context": "You watch a CCTV camera in an exam hall during an exam and flag behaviour for an invigilator to "

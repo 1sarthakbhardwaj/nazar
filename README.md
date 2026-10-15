@@ -40,6 +40,7 @@ One camera loop, four things it can watch for. Pick with `--profile` (or `PROFIL
 |---|---|---|
 | `home` (default) | Falls, things breaking, spills, smoke or fire | Parents living alone |
 | `shop` | Items breaking or falling, spills, falls, theft, fights, damage | A store aisle or warehouse |
+| `parking` | Car theft or tampering, theft, break-in attempts, damage, accidents | A gate or parking camera |
 | `exam` | Phone use, copying, hidden notes, talking (flags for the invigilator, never decides guilt) | An exam hall |
 | `traffic` | Red light jumps, no helmet, triple riding, wrong-side driving, accidents | A junction camera |
 

@@ -161,6 +161,11 @@ def serve(args):
         src = Source(args.source, args.start, args.end, args.loop)
     except Exception as e:
         print(f"Can't open the video source: {e}")
+        clips = sorted(str(p.relative_to(config.ROOT)) for p in (config.ROOT / "datasets").rglob("*.mp4"))
+        if clips:
+            print("Clips you have:\n" + "\n".join(f"  python3 app.py --source {c}" for c in clips))
+        else:
+            print("Get the demo clips first: python3 app.py fetch")
         return 1
     engine = Engine(src, rehearsal=args.rehearsal, headless=args.headless)
     if args.trigger:
