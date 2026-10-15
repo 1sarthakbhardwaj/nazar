@@ -31,7 +31,8 @@ def lines(a, rich):
     """a: dict with rule, why, after, camera. Short and human: what, where, when."""
     esc = html.escape if rich else (lambda s: s)
     bold = (lambda s: f"<b>{s}</b>") if rich else (lambda s: s)
-    out = [f"🚨 {bold(ai.TITLES.get(a['rule'], ai.TITLES['other']))} · {esc(a['camera'])}"]
+    title = a.get("title") or ai.TITLES.get(a["rule"], "Something's wrong")
+    out = [f"🚨 {bold(esc(title))} · {esc(a['camera'])}"]
     if a["why"]:
         out.append(f"“{esc(a['why'])}”")
     now = datetime.now().strftime("%I:%M %p").lstrip("0")

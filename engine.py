@@ -12,7 +12,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|timeout;8000000")  # RTSP over TCP, 8s timeout
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
@@ -66,6 +66,9 @@ class Source:
             self.cap = cv2.VideoCapture(int(self.spec), cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY)
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        elif self.kind == "stream":
+            self.cap = cv2.VideoCapture(self.spec, cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000,
+                                                                     cv2.CAP_PROP_READ_TIMEOUT_MSEC, 8000])
         else:
             self.cap = cv2.VideoCapture(self.spec, cv2.CAP_FFMPEG)
         if not self.cap.isOpened():
@@ -181,14 +184,14 @@ def prepare(frames):
             "times": [round(frames[0][0], 1), round(frames[-1][0], 1)]}
 
 
-def ask_model(p, camera):
-    return ai.check(p["clip"] if p["kind"] == "video" else p["model_sheet"], p["kind"], p["times"], camera)
+def ask_model(p, camera, profile=None):
+    return ai.check(p["clip"] if p["kind"] == "video" else p["model_sheet"], p["kind"], p["times"], camera, profile)
 
 
-def judge(frames, camera):
+def judge(frames, camera, profile=None):
     """Prepare and ask in one go. -> (result, kind, sheet_path, clip_path)."""
     p = prepare(frames)
-    return ask_model(p, camera), p["kind"], p["sheet_path"], p["clip_path"]
+    return ask_model(p, camera, profile), p["kind"], p["sheet_path"], p["clip_path"]
 
 
 def log_verdict(record):
@@ -207,9 +210,15 @@ def say(text, kind=""):
 # ------------------------------------------------------------------ the live loop
 
 class Engine(threading.Thread):
-    def __init__(self, source, headless=False):
+    def __init__(self, source, headless=False, camera=None, profile=None, zone=None, min_gap=0, tag=None):
+        """camera: display name. profile: scenario pack. zone: [x1, y1, x2, y2] as fractions of the frame; motion
+        outside it is ignored. min_gap: least seconds between two checks on this camera. tag: log prefix."""
         super().__init__(daemon=True)
         self.src, self.headless = source, headless
+        self.camera = camera or config.CAMERA
+        self.profile = profile or ai.PROFILE_NAME
+        self.pack = ai.pack(self.profile)
+        self.zone, self.min_gap, self.tag = zone, float(min_gap or 0), tag
         self.trigger = config.MOTION_TRIGGER
         self.max_per_arm = 10 ** 9 if headless else config.MAX_PER_ARM
         self.armed = headless                      # a headless run watches from the start
@@ -251,18 +260,18 @@ class Engine(threading.Thread):
                     pass
 
     def log(self, text, kind=""):
-        say(text, kind)
+        say(f"[{self.tag}] {text}" if self.tag else text, kind)
         self.emit("log", text=text, kind=kind)
 
     def status(self):
         s = self.src
-        return {"type": "status", "app": config.APP_NAME, "model": config.MODEL_LABEL, "profile": ai.PROFILE_NAME,
-                "camera": config.CAMERA, "input": config.AI_INPUT, "alerts": config.ALERTS,
+        return {"type": "status", "app": config.APP_NAME, "model": config.MODEL_LABEL, "profile": self.profile,
+                "camera": self.camera, "input": config.AI_INPUT, "alerts": config.ALERTS,
                 "source": {"kind": s.kind, "name": s.name, "start": s.start, "end": s.end},
                 "origin": s.origin if s.live else None, "used": ai.used_today(), "cap": config.DAILY_CAP,
                 "free": ai._free["value"], "trigger": self.trigger,
                 "max_per_arm": config.MAX_PER_ARM, "armed": self.armed, "phase": self.phase, "playing": self.playing,
-                "key_set": bool(config.OPENROUTER_KEY)}
+                "key_set": ai.ready(), "provider": config.PROVIDER}
 
     def command(self, name, *args):
         self.cmds.put((name, *args))
@@ -311,7 +320,7 @@ class Engine(threading.Thread):
             self.playing, self.ended = False, True
             if self.phase == "collecting":
                 self._dispatch()
-            self.log("Clip ended. Press R to play it again.")
+            self.log("Clip ended." if self.headless else "Clip ended. Press R to play it again.")
             self._set_phase(self.phase)
             return
         self.log(f"Lost {self.src.name}, reconnecting…", "error")
@@ -351,6 +360,10 @@ class Engine(threading.Thread):
         if self.next_motion_t is None or t >= self.next_motion_t:
             self.next_motion_t = t + 0.25
             grey = tiny_grey(frame)
+            if self.zone:  # only watch the part of the picture that matters
+                x1, y1, x2, y2 = self.zone
+                h, w = grey.shape[:2]
+                grey = grey[int(y1 * h):max(int(y1 * h) + 1, int(y2 * h)), int(x1 * w):max(int(x1 * w) + 1, int(x2 * w))]
             self.small.append((t, grey))
             while self.small and self.small[0][0] < t - 4:
                 self.small.popleft()
@@ -403,8 +416,9 @@ class Engine(threading.Thread):
         what = f"a {seconds:.0f}s clip" if kind == "video" else "4 frames"
         self.emit("sheet", url=f"/data/sheets/{sheet_path.name}", kind=kind, seconds=round(seconds, 1))
         self.log(f"Sent {what} to Nemotron", "ask")
-        res = ask_model(p, config.CAMERA)
-        record = {"at": datetime.now().isoformat(timespec="seconds"), "source": self.src.name, "trigger": ev["trigger"],
+        res = ask_model(p, self.camera, self.profile)
+        record = {"at": datetime.now().isoformat(timespec="seconds"), "camera": self.camera, "source": self.src.name,
+                  "trigger": ev["trigger"],
                   "from": round(frames[0][0], 1), "to": round(frames[-1][0], 1), "input": kind,
                   "sheet": str(sheet_path), "clip": str(clip_path) if clip_path else None}
         cooldown, disarm_reason = config.COOLDOWN_CLEAR, None
@@ -423,15 +437,16 @@ class Engine(threading.Thread):
             # real seconds from the incident being on screen to now (works after a clip has ended, too)
             after = max(0.0, time.time() - (self.frame_wall - (self.t - incident_t)))
             is_alert = v["alert"] and v["confidence"] >= config.MIN_CONF
-            label = ai.RULES.get(v["rule"], "INCIDENT")
+            label = self.pack["labels"].get(v["rule"], "INCIDENT")
+            title = self.pack["titles"].get(v["rule"], self.pack["titles"]["other"])
             record.update(ok=True, verdict=v, alert=is_alert, latency=res["latency"], after=round(after, 1),
-                          profile=ai.PROFILE_NAME, title=ai.TITLES.get(v["rule"], ai.TITLES["other"]))
+                          profile=self.profile, title=title)
             if is_alert:
                 a = {**v, "t": incident_t, "origin": self.src.origin if self.src.live else None, "after": after,
-                     "camera": config.CAMERA, "call": res["call"]}
+                     "camera": self.camera, "title": title, "call": res["call"]}
                 deliveries = alerts.send(a, sheet_path, clip_path)
                 record["deliveries"] = deliveries
-                self.emit("alert", rule=v["rule"], label=label, title=ai.TITLES.get(v["rule"], ai.TITLES["other"]),
+                self.emit("alert", rule=v["rule"], label=label, title=title,
                           why=v["why"], confidence=v["confidence"], after=round(after, 1), latency=res["latency"],
                           deliveries=deliveries, sheet=f"/data/sheets/{sheet_path.name}")
                 self.log(f"🚨 {label} · {round(v['confidence'] * 100)}% · “{v['why']}” ({res['latency']:.1f}s)", "alert")
@@ -459,8 +474,8 @@ class Engine(threading.Thread):
     def _cmd_arm(self):
         if self.armed:
             return
-        if not config.OPENROUTER_KEY:
-            return self.log("Add OPENROUTER_API_KEY to .env first", "error")
+        if not ai.ready():
+            return self.log("Add OPENROUTER_API_KEY to .env (or set PROVIDER=ollama) first", "error")
         if self.src.kind == "file":
             if self.ended:
                 self._restart_file()
@@ -471,7 +486,7 @@ class Engine(threading.Thread):
             self._set_phase("watching")
         else:
             self._set_phase(self.phase)
-        self.log(f"Armed: watching {config.CAMERA}")
+        self.log(f"Armed: watching {self.camera}")
 
     def _cmd_disarm(self):
         self.armed, self.pending_t = False, None
@@ -485,8 +500,8 @@ class Engine(threading.Thread):
     def _cmd_check(self):
         if self.phase in ("analyzing", "collecting"):
             return
-        if not config.OPENROUTER_KEY:
-            return self.log("Add OPENROUTER_API_KEY to .env first", "error")
+        if not ai.ready():
+            return self.log("Add OPENROUTER_API_KEY to .env (or set PROVIDER=ollama) first", "error")
         if not self.clip:
             return self.log("Nothing recorded yet. Play the video first.", "error")
         self._start_event(self.t, "manual")
@@ -540,7 +555,7 @@ class Engine(threading.Thread):
             self.armed = False
             self.log(f"{self.calls} calls used this round, disarmed to save quota. Press Space to arm again.")
         if self.armed:
-            self.cooldown_until = self.t + cooldown
+            self.cooldown_until = self.t + max(cooldown, self.min_gap)
         self._set_phase("watching" if self.armed else "ready")
         self.emit_status()
 

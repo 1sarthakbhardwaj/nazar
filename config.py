@@ -34,7 +34,10 @@ def write_env(key, value):
 load_env()
 env = os.environ.get
 
-# the model
+# the model: OpenRouter (hosted, free tier) or Ollama (fully local, nothing leaves the machine)
+PROVIDER = env("PROVIDER", "openrouter")       # openrouter | ollama
+OLLAMA_URL = env("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL = env("OLLAMA_MODEL", "nemotron-3.5-super")
 OPENROUTER_KEY = env("OPENROUTER_API_KEY", "")
 MODEL = env("MODEL", "nvidia/nemotron-3.5-super-vl:free")
 MODEL_LABEL = "Nemotron 3.5 Super VL" if "nemotron-3.5-super-vl" in MODEL else MODEL
@@ -43,6 +46,9 @@ REASONING = env("REASONING", "off")            # off | default
 STRUCTURED = env("STRUCTURED", "1") != "0"     # ask for strict JSON output
 DAILY_CAP = int(env("DAILY_CAP", "45"))        # OpenRouter allows 50 free calls a day; keep 5 spare
 MIN_CONF = float(env("ALERT_MIN_CONFIDENCE", "0.5"))
+if PROVIDER == "ollama":
+    AI_INPUT = "frames"                        # Ollama takes images, not video: send the 4-frame sheet
+    MODEL_LABEL = "Nemotron 3.5 Super (local)" if OLLAMA_MODEL.startswith("nemotron-3.5-super") else OLLAMA_MODEL
 
 # the camera
 SOURCE = env("SOURCE", "0")                    # file path, webcam index (0) or stream URL (rtsp://...)
@@ -59,6 +65,7 @@ CLIP_FPS = float(env("CLIP_FPS", "6"))               # frames per second in the 
 MAX_PER_ARM = int(env("MAX_PER_ARM", "6"))           # calls per arming in the dashboard, then it disarms
 COOLDOWN_ALERT = float(env("COOLDOWN_ALERT", "45"))   # quiet time after an alert, so one incident is one alert
 COOLDOWN_CLEAR = float(env("COOLDOWN_CLEAR", "4"))
+MIN_CHECK_GAP = float(env("MIN_CHECK_GAP", "20"))    # always-on cameras: least seconds between two checks
 
 # alerts
 ALERTS = [a.strip() for a in env("ALERTS", "telegram").split(",") if a.strip()]  # telegram, hermes

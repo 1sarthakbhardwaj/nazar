@@ -1,0 +1,36 @@
+{
+  "_readme": "Copy to cameras.json (git-ignored), then: python3 app.py watch. Passwords come from .env as ${NAME}, never from this file. Only connect cameras you own or are allowed to use.",
+  "cameras": [
+    {
+      "name": "Living Room",
+      "brand": "tapo",
+      "ip": "192.168.1.20",
+      "user": "${TAPO_USER}",
+      "password": "${TAPO_PASS}",
+      "profile": "home"
+    },
+    {
+      "name": "Gate",
+      "source": "rtsp://${HIK_USER}:${HIK_PASS}@192.168.1.30:554/Streaming/Channels/102",
+      "profile": "parking",
+      "zone": [0.0, 0.35, 1.0, 1.0],
+      "min_gap": 60
+    },
+    {
+      "name": "Shop counter",
+      "brand": "cpplus",
+      "ip": "192.168.1.40",
+      "user": "${CPPLUS_USER}",
+      "password": "${CPPLUS_PASS}",
+      "profile": "shop",
+      "trigger": 1.5
+    },
+    {
+      "name": "Pet cam",
+      "brand": "ipwebcam",
+      "ip": "192.168.1.50",
+      "profile": "pets",
+      "enabled": false
+    }
+  ]
+}

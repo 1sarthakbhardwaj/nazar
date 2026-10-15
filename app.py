@@ -8,6 +8,13 @@ Dashboard (demo and live):
   python3 app.py --profile shop --source ...              what to watch for (see ai.PROFILES)
   python3 app.py --source rtsp://... --headless           no dashboard, alerts only (for a server)
 
+Live cameras:
+  python3 app.py --brand tapo --ip 192.168.1.20           a home camera (user/password from .env)
+  python3 app.py watch                                    every camera in cameras.json at once, headless
+  python3 app.py cameras                                  stream addresses for Tapo, Hikvision, CP Plus, Reolink...
+  python3 app.py probe --source rtsp://...                check a stream works and save a frame (no AI calls)
+  python3 app.py discover                                 find ONVIF cameras on your network
+
 Tools:
   python3 app.py fetch                      download real demo clips (GMDCSA-24, CC BY 4.0) with fall times
   python3 app.py find --source clip.mp4     list the moments with motion and the --start to use (no AI calls)
@@ -153,8 +160,8 @@ def make_handler(engine):
 
 
 def serve(args):
-    if not config.OPENROUTER_KEY:
-        print("OPENROUTER_API_KEY is missing. Copy .env.example to .env and add your key.")
+    if not ai.ready():
+        print("OPENROUTER_API_KEY is missing. Copy .env.example to .env and add your key (or set PROVIDER=ollama).")
         return 1
     try:
         src = Source(args.source, args.start, args.end, args.loop)
@@ -166,17 +173,21 @@ def serve(args):
         else:
             print("Get the demo clips first: python3 app.py fetch")
         return 1
-    engine = Engine(src, headless=args.headless)
+    engine = Engine(src, headless=args.headless, min_gap=config.MIN_CHECK_GAP if args.headless and src.live else 0)
     if args.trigger:
         engine.trigger = args.trigger
     span = f" ({src.start:g}s to {src.end:g}s)" if src.kind == "file" and src.end else (f" (from {src.start:g}s)" if src.start else "")
     print(f"\n  \033[1m{config.APP_NAME.upper()}\033[0m")
     print(f"  Watching   {config.CAMERA} · {ai.PROFILE_NAME} pack: {', '.join(ai.TITLES[k] for k in ai.PROFILE['rules'])}")
     print(f"  Source     {src.name}{span}")
-    print(f"  Model      {config.MODEL} · sends {'video clips' if config.AI_INPUT == 'video' else '4-frame sheets'}")
-    q = ai.free_quota(max_age=0)
-    left = f" · OpenRouter: {q['remaining']} free calls left today" if q and q.get("remaining") is not None else ""
-    print(f"  Budget     {ai.used_today()}/{config.DAILY_CAP} calls used today{left}")
+    model = f"{config.OLLAMA_MODEL} via Ollama (local)" if config.PROVIDER == "ollama" else config.MODEL
+    print(f"  Model      {model} · sends {'video clips' if config.AI_INPUT == 'video' else '4-frame sheets'}")
+    if config.PROVIDER == "ollama":
+        print("  Budget     local model, no daily limit")
+    else:
+        q = ai.free_quota(max_age=0)
+        left = f" · OpenRouter: {q['remaining']} free calls left today" if q and q.get("remaining") is not None else ""
+        print(f"  Budget     {ai.used_today()}/{config.DAILY_CAP} calls used today{left}")
     print(f"  Alerts     {', '.join(config.ALERTS) or 'none'}")
     engine.start()
     if args.headless:
@@ -297,8 +308,8 @@ def cmd_report(args):
     rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
     rows = [r for r in rows if r.get("at", "").startswith(date.today().isoformat())]
     found = [r for r in rows if r.get("alert")]
-    print(f"Today on {config.CAMERA}: {len(rows)} checks, {len(found)} alerts. "
-          f"Nemotron calls used: {ai.used_today()}/{config.DAILY_CAP}.")
+    used = "local model" if config.PROVIDER == "ollama" else f"Nemotron calls used: {ai.used_today()}/{config.DAILY_CAP}"
+    print(f"Today on {config.CAMERA}: {len(rows)} checks, {len(found)} alerts. {used}.")
     for r in found[-5:]:
         v = r["verdict"]
         print(f"- {r['at'][11:16]} {r.get('title') or ai.TITLES.get(v['rule'], ai.TITLES['other'])}: {v['why']} "
@@ -427,6 +438,202 @@ def cmd_fetch(args):
     return 0
 
 
+# ------------------------------------------------------------------ live cameras
+
+CAMERA_BRANDS = {  # brand: (HD stream, lighter sub-stream, how to turn it on)
+    "tapo": ("rtsp://{auth}{ip}:554/stream1", "rtsp://{auth}{ip}:554/stream2",
+             "TP-Link Tapo: Tapo app > camera > Advanced settings > Camera account gives the user and password."),
+    "hikvision": ("rtsp://{auth}{ip}:554/Streaming/Channels/101", "rtsp://{auth}{ip}:554/Streaming/Channels/102",
+                  "Hikvision cameras and NVRs (channel 2 is 201 / 202)."),
+    "dahua": ("rtsp://{auth}{ip}:554/cam/realmonitor?channel=1&subtype=0",
+              "rtsp://{auth}{ip}:554/cam/realmonitor?channel=1&subtype=1",
+              "Dahua and its OEMs: CP Plus, Amcrest, Lorex."),
+    "reolink": ("rtsp://{auth}{ip}:554/h264Preview_01_main", "rtsp://{auth}{ip}:554/h264Preview_01_sub",
+                "Reolink: turn on RTSP in the camera's advanced network settings."),
+    "ezviz": ("rtsp://{auth}{ip}:554/h264/ch1/main/av_stream", "rtsp://{auth}{ip}:554/h264/ch1/sub/av_stream",
+              "EZVIZ: user admin, password = the verification code on the camera's sticker; turn on RTSP in the app."),
+    "ipwebcam": ("http://{ip}:8080/video", "http://{ip}:8080/video",
+                 "An Android phone as a camera: the IP Webcam app, then Start server."),
+    "go2rtc": ("rtsp://{ip}:8554/{name}", "rtsp://{ip}:8554/{name}",
+               "go2rtc, Frigate or Home Assistant restreams: the way in for Ring, Nest, Wyze and other cloud cameras."),
+}
+CAMERA_BRANDS["cpplus"] = CAMERA_BRANDS["amcrest"] = CAMERA_BRANDS["dahua"]
+
+
+def build_source(brand, ip, user=None, password=None, hd=False, name="camera"):
+    """A stream URL from a brand template. User and password default to CAMERA_USER / CAMERA_PASS in .env."""
+    from urllib.parse import quote
+    if brand not in CAMERA_BRANDS:
+        raise SystemExit(f"Unknown camera brand {brand!r}. Known: {', '.join(sorted(CAMERA_BRANDS))}")
+    user = os.environ.get("CAMERA_USER", "") if user is None else user
+    password = os.environ.get("CAMERA_PASS", "") if password is None else password
+    if brand == "ezviz" and not user:
+        user = "admin"
+    auth = f"{quote(user, safe='')}:{quote(password, safe='')}@" if user or password else ""
+    hd_url, sub_url, _ = CAMERA_BRANDS[brand]
+    return (hd_url if hd else sub_url).format(auth=auth, ip=ip, name=name)
+
+
+def masked(spec):
+    import re
+    return re.sub(r"//[^/@]+@", "//***@", str(spec))
+
+
+def expand_env(value):
+    """${VAR} inside cameras.json comes from .env, so passwords never sit in the JSON."""
+    import re
+    if not isinstance(value, str):
+        return value
+
+    def sub(m):
+        if m.group(1) not in os.environ:
+            print(f"  ⚠ {m.group(1)} is not set in .env", file=sys.stderr)
+        return os.environ.get(m.group(1), "")
+
+    return re.sub(r"\$\{([A-Za-z0-9_]+)\}", sub, value)
+
+
+def cmd_cameras(args):
+    print("\n  Stream addresses for common cameras. The sub-stream is lighter and plenty for the AI.\n")
+    done = set()
+    for brand, (hd_url, sub_url, how) in CAMERA_BRANDS.items():
+        if (hd_url, sub_url) in done:
+            continue
+        done.add((hd_url, sub_url))
+        aliases = [b for b, v in CAMERA_BRANDS.items() if v == (hd_url, sub_url, how)]
+        print(f"  {' / '.join(aliases):<26} {sub_url.format(auth='USER:PASS@', ip='IP', name='NAME')}")
+        print(f"  {'':<26} {how}\n")
+    print("  Put CAMERA_USER and CAMERA_PASS in .env, then:")
+    print("    python3 app.py probe --brand tapo --ip 192.168.1.20      check the stream works")
+    print("    python3 app.py --brand tapo --ip 192.168.1.20            open the dashboard on it")
+    print("  Several cameras at once: cp cameras.example.json cameras.json, edit it, then python3 app.py watch")
+    print("  Find cameras on your network: python3 app.py discover\n")
+    return 0
+
+
+def cmd_probe(args):
+    """Open a camera or stream, check it delivers frames, and save one. No AI calls."""
+    print(f"Opening {masked(args.source)} …")
+    try:
+        src = Source(args.source)
+    except Exception as e:
+        print(f"Couldn't open it: {e}")
+        print("Check the IP, the user and password, and that RTSP is switched on in the camera's app.")
+        return 1
+    frame, frames, began = None, 0, time.monotonic()
+    while time.monotonic() - began < 3:
+        ok, f, _ = src.read()
+        if not ok:
+            break
+        frame, frames = f, frames + 1
+    src.release()
+    if frame is None:
+        print("It opened, but no frames came through.")
+        return 1
+    h, w = frame.shape[:2]
+    rate = src.fps if src.kind == "file" else frames / max(0.1, time.monotonic() - began)
+    config.DATA.mkdir(exist_ok=True)
+    import cv2
+    cv2.imwrite(str(config.DATA / "probe.jpg"), frame)
+    print(f"Works: {w}x{h} at about {rate:.0f} frames a second. One frame saved to data/probe.jpg")
+    if max(w, h) > 1920:
+        print("Tip: use the camera's sub-stream (python3 app.py cameras): the AI only needs 640px.")
+    return 0
+
+
+def cmd_discover(args):
+    """Find ONVIF cameras on the local network with a WS-Discovery probe. No AI calls."""
+    import re
+    import socket
+    import uuid
+    from urllib.parse import unquote
+    probe = (
+        '<?xml version="1.0" encoding="UTF-8"?><e:Envelope xmlns:e="http://www.w3.org/2003/05/soap-envelope" '
+        'xmlns:w="http://schemas.xmlsoap.org/ws/2004/08/addressing" '
+        'xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery" xmlns:dn="http://www.onvif.org/ver10/network/wsdl">'
+        f'<e:Header><w:MessageID>uuid:{uuid.uuid4()}</w:MessageID>'
+        '<w:To e:mustUnderstand="true">urn:schemas-xmlsoap-org:ws:2005:04:discovery</w:To>'
+        '<w:Action e:mustUnderstand="true">http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</w:Action></e:Header>'
+        '<e:Body><d:Probe><d:Types>dn:NetworkVideoTransmitter</d:Types></d:Probe></e:Body></e:Envelope>')
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+    sock.settimeout(0.5)
+    print("Looking for ONVIF cameras on your network for 4 seconds…")
+    sock.sendto(probe.encode(), ("239.255.255.250", 3702))
+    found, deadline = {}, time.monotonic() + 4
+    while time.monotonic() < deadline:
+        try:
+            data, (ip, _) = sock.recvfrom(65535)
+        except socket.timeout:
+            continue
+        text = data.decode("utf-8", "ignore")
+        scopes = " ".join(re.findall(r"Scopes>\s*([^<]+?)\s*<", text))
+        xaddrs = " ".join(re.findall(r"XAddrs>\s*([^<]+?)\s*<", text))
+        name = re.search(r"onvif://www\.onvif\.org/name/(\S+)", scopes)
+        hardware = re.search(r"onvif://www\.onvif\.org/hardware/(\S+)", scopes)
+        found[ip] = (unquote(name.group(1)) if name else "", unquote(hardware.group(1)) if hardware else "", xaddrs)
+    sock.close()
+    if not found:
+        print("No ONVIF cameras answered. Many cameras need ONVIF switched on in their app; "
+              "you can still connect with --brand and --ip (python3 app.py cameras).")
+        return 0
+    guesses = [("tapo", ("tapo", ":2020/")), ("hikvision", ("hikvision", "ds-")), ("dahua", ("dahua", "ipc-")),
+               ("cpplus", ("cp plus", "cpplus")), ("reolink", ("reolink",)), ("ezviz", ("ezviz",))]
+    for ip, (name, hardware, xaddrs) in sorted(found.items()):
+        hay = f"{name} {hardware} {xaddrs}".lower()
+        brand = next((b for b, keys in guesses if any(k in hay for k in keys)), None)
+        print(f"  {ip:<16} {name or 'camera'} {hardware}".rstrip())
+        print(f"  {'':<16} " + (f"python3 app.py probe --brand {brand} --ip {ip}" if brand
+                                 else f"try rtsp://USER:PASS@{ip}:554/ with your camera's stream path"))
+    return 0
+
+
+def cmd_watch(args):
+    """Watch every camera in cameras.json at once, without a dashboard; alerts go to Telegram / Hermes."""
+    path = Path(args.config) if args.config else config.ROOT / "cameras.json"
+    if not path.exists():
+        print(f"No {path.name} yet. Start from the example:  cp cameras.example.json cameras.json")
+        return 1
+    if not ai.ready():
+        print("OPENROUTER_API_KEY is missing in .env (or set PROVIDER=ollama)")
+        return 1
+    cams = [c for c in json.loads(path.read_text()).get("cameras", []) if c.get("enabled", True)]
+    engines = []
+    print(f"\n  {config.APP_NAME.upper()} · watching {len(cams)} camera(s)\n")
+    for i, c in enumerate(cams, 1):
+        name = c.get("name") or f"Camera {i}"
+        if c.get("brand"):
+            spec = build_source(c["brand"], c.get("ip", ""), expand_env(c.get("user")), expand_env(c.get("password")),
+                                c.get("hd", False), c.get("stream_name", "camera"))
+        else:
+            spec = expand_env(c.get("source", ""))
+        profile = c.get("profile") or ai.PROFILE_NAME
+        try:
+            src = Source(spec)
+        except Exception as e:
+            print(f"  ✗ {name}: couldn't open {masked(spec)} ({e}). Skipped; check it with python3 app.py probe")
+            continue
+        engine = Engine(src, headless=True, camera=name, profile=profile, zone=c.get("zone"),
+                        min_gap=c.get("min_gap", config.MIN_CHECK_GAP if src.live else 0), tag=name)
+        if c.get("trigger") is not None:
+            engine.trigger = float(c["trigger"])
+        engines.append(engine)
+        titles = ", ".join(t for k, t in ai.pack(profile)["titles"].items() if k != "other")
+        print(f"  ✓ {name:<16} {src.name} · {profile}: {titles}")
+    if not engines:
+        return 1
+    left = "" if config.PROVIDER == "ollama" else f" · budget {ai.used_today()}/{config.DAILY_CAP} calls today"
+    print(f"\n  Model {config.MODEL_LABEL}{left} · alerts to {', '.join(config.ALERTS)}. Ctrl+C to stop.\n")
+    for engine in engines:
+        engine.start()
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    return 0
+
+
 # ------------------------------------------------------------------ setup helpers
 
 def row(name, value):
@@ -437,19 +644,30 @@ def cmd_check(args):
     print(f"\n  {config.APP_NAME} setup check (no model calls)\n")
     row("Settings file", config.ENV_PATH.name if config.ENV_PATH.exists() else "missing: run `cp .env.example .env` and fill it in")
     row("ffmpeg", ffmpeg_exe() or "missing (needed for video clips): brew install ffmpeg")
-    status, body, _ = http("GET", f"{ai.OPENROUTER}/models/{config.MODEL}/endpoints", timeout=10)
-    inputs = ((body.get("data") or {}).get("architecture") or {}).get("input_modalities") or []
-    row("Model", f"{config.MODEL} " + (f"(takes {', '.join(inputs)})" if inputs else f"NOT FOUND ({error_text(body, status)})"))
-    if config.OPENROUTER_KEY:
-        status, body, _ = http("GET", f"{ai.OPENROUTER}/key", headers=ai.auth(), timeout=10)
-        if status == 200:
-            q = (body.get("data") or {}).get("free_model_daily_requests") or {}
-            row("OpenRouter key", f"ok · free calls today: {q.get('used', '?')} used, {q.get('remaining', '?')} left of {q.get('limit', '?')}")
-        else:
-            row("OpenRouter key", f"rejected: {error_text(body, status)}")
+    if config.PROVIDER == "ollama":
+        status, body, _ = http("GET", f"{config.OLLAMA_URL}/api/tags", timeout=5)
+        names = [m.get("name", "") for m in (body.get("models") or [])] if status == 200 else []
+        pulled = any(n.split(":")[0] == config.OLLAMA_MODEL.split(":")[0] for n in names)
+        row("Model (local)", f"{config.OLLAMA_MODEL} via Ollama · " + (
+            "ready" if pulled else f"not pulled: ollama pull {config.OLLAMA_MODEL}" if status == 200
+            else f"Ollama not reachable at {config.OLLAMA_URL}"))
     else:
-        row("OpenRouter key", "missing (OPENROUTER_API_KEY)")
-    row("Local budget", f"{ai.used_today()}/{config.DAILY_CAP} calls used today")
+        status, body, _ = http("GET", f"{ai.OPENROUTER}/models/{config.MODEL}/endpoints", timeout=10)
+        inputs = ((body.get("data") or {}).get("architecture") or {}).get("input_modalities") or []
+        row("Model", f"{config.MODEL} " + (f"(takes {', '.join(inputs)})" if inputs else f"NOT FOUND ({error_text(body, status)})"))
+    if config.PROVIDER == "ollama":
+        row("Budget", "local model, no daily limit")
+    else:
+        if config.OPENROUTER_KEY:
+            status, body, _ = http("GET", f"{ai.OPENROUTER}/key", headers=ai.auth(), timeout=10)
+            if status == 200:
+                q = (body.get("data") or {}).get("free_model_daily_requests") or {}
+                row("OpenRouter key", f"ok · free calls today: {q.get('used', '?')} used, {q.get('remaining', '?')} left of {q.get('limit', '?')}")
+            else:
+                row("OpenRouter key", f"rejected: {error_text(body, status)}")
+        else:
+            row("OpenRouter key", "missing (OPENROUTER_API_KEY)")
+        row("Local budget", f"{ai.used_today()}/{config.DAILY_CAP} calls used today")
     row("Alerts go to", ", ".join(config.ALERTS) or "nowhere")
     if config.TELEGRAM_BOT_TOKEN:
         ok, me = alerts.telegram("getMe", {})
@@ -507,8 +725,8 @@ def cmd_telegram(args):
 
 def cmd_smoke(args):
     """One real Nemotron call on a few seconds of real footage, to prove the key, the model and the JSON work."""
-    if not config.OPENROUTER_KEY:
-        print("OPENROUTER_API_KEY is missing in .env")
+    if not ai.ready():
+        print("OPENROUTER_API_KEY is missing in .env (or set PROVIDER=ollama)")
         return 1
     if args.source == "0" and not config.ENV_PATH.exists():
         print("Pass a clip: python3 app.py smoke --source datasets/gmdcsa24/s2-fall-12.mp4 --start 5")
@@ -614,8 +832,13 @@ def main():
     p = argparse.ArgumentParser(description="Nazar: AI camera alerts with NVIDIA Nemotron (free).",
                                 formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     p.add_argument("command", nargs="?", default="serve",
-                   choices=["serve", "fetch", "find", "once", "report", "check", "telegram", "smoke", "hermes"])
+                   choices=["serve", "watch", "cameras", "probe", "discover", "fetch", "find", "once", "report", "check",
+                            "telegram", "smoke", "hermes"])
     p.add_argument("--source", default=config.SOURCE, help="video file, webcam index (0) or stream URL")
+    p.add_argument("--brand", help="camera brand for the stream URL (see: python3 app.py cameras)")
+    p.add_argument("--ip", help="camera IP address, with --brand")
+    p.add_argument("--hd", action="store_true", help="with --brand: the HD stream instead of the sub-stream")
+    p.add_argument("--config", help="watch: the cameras file (default cameras.json)")
     p.add_argument("--profile", choices=list(ai.PROFILES), help="what to watch for: " + ", ".join(ai.PROFILES))
     p.add_argument("--camera", help="camera name shown in the dashboard and alerts")
     p.add_argument("--start", type=float, default=0, help="files: start at this second")
@@ -639,7 +862,12 @@ def main():
         ai.set_profile(args.profile)
     if args.camera:
         config.CAMERA = args.camera
-    commands = {"serve": serve, "fetch": cmd_fetch, "find": cmd_find, "once": cmd_once, "report": cmd_report, "check": cmd_check,
+    if args.brand:
+        if not args.ip:
+            p.error("--brand needs --ip")
+        args.source = build_source(args.brand, args.ip, hd=args.hd)
+    commands = {"serve": serve, "watch": cmd_watch, "cameras": cmd_cameras, "probe": cmd_probe, "discover": cmd_discover,
+                "fetch": cmd_fetch, "find": cmd_find, "once": cmd_once, "report": cmd_report, "check": cmd_check,
                 "telegram": cmd_telegram, "smoke": cmd_smoke, "hermes": cmd_hermes}
     return commands[args.command](args)
 

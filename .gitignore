@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+cameras.json
 data/
 clips/
 __pycache__/

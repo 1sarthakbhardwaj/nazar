@@ -130,48 +130,68 @@ PROFILES = {
     },
 }
 
-PROFILE_NAME, PROFILE, RULES, TITLES, PROMPTS, SCHEMA = None, None, {}, {}, {}, {}
+_PACKS = {}
+
+
+def pack(name):
+    """Everything one scenario pack needs: its rules, alert titles, prompts and JSON schema (cached)."""
+    if name not in PROFILES:
+        raise SystemExit(f"Unknown profile {name!r}. Pick one of: {', '.join(PROFILES)}")
+    if name not in _PACKS:
+        prof = PROFILES[name]
+        rules = prof["rules"]
+        titles = {k: title for k, (title, _) in rules.items()}
+        titles["other"] = "Something's wrong"
+        rules_text = "\n".join(f"- {k}: {what}" for k, (_, what) in rules.items())
+        body = (f"Alert only for these, and only when it is clearly visible:\n{rules_text}\n\n{prof['normal']}\n"
+                "Never identify or describe a person beyond the action itself: no clothing, age, gender, ethnicity or names.\n\n"
+                "Reply with JSON only:\n"
+                '{"alert": true or false, "rule": "<one rule name above, or none>", "t": <the t= time where it first '
+                'shows, or 0>, "confidence": <0 to 1>, "why": "<at most 12 words on what happened>"}')
+        _PACKS[name] = {
+            "name": name, "camera": prof["camera"], "rules": rules, "titles": titles,
+            "labels": {k: t.upper() for k, t in titles.items() if k != "other"},
+            "prompts": {
+                "video": f"{prof['context']}\n\nYou get a short video clip from one camera. Every frame shows its time "
+                         f"as t=...s in the top-left corner.\n\n{body}",
+                "frames": f"{prof['context']}\n\nYou get one image: a 2x2 contact sheet of consecutive frames from one "
+                          f"camera, read left to right, then top to bottom. Each frame shows its time as t=...s.\n\n{body}",
+            },
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "alert": {"type": "boolean"},
+                    "rule": {"type": "string", "enum": [*rules, "none"]},
+                    "t": {"type": "number"},
+                    "confidence": {"type": "number"},
+                    "why": {"type": "string"},
+                },
+                "required": ["alert", "rule", "t", "confidence", "why"],
+                "additionalProperties": False,
+            },
+        }
+    return _PACKS[name]
+
+
+# the default pack for single-camera runs (PROFILE in .env or --profile)
+PROFILE_NAME, PROFILE, RULES, TITLES = None, None, {}, {}
 
 
 def set_profile(name):
-    """Switch the scenario pack: the rules in the prompt, the JSON schema, and the alert titles."""
-    global PROFILE_NAME, PROFILE, RULES, TITLES, PROMPTS, SCHEMA
-    if name not in PROFILES:
-        raise SystemExit(f"Unknown profile {name!r}. Pick one of: {', '.join(PROFILES)}")
-    PROFILE_NAME, PROFILE = name, PROFILES[name]
+    """Switch the default scenario pack: the rules in the prompt, the JSON schema, and the alert titles."""
+    global PROFILE_NAME, PROFILE, RULES, TITLES
+    pk = pack(name)
+    PROFILE_NAME, PROFILE, RULES, TITLES = name, PROFILES[name], pk["labels"], pk["titles"]
     if not config.env("CAMERA_NAME"):
-        config.CAMERA = PROFILE["camera"]
-    rules = PROFILE["rules"]
-    TITLES = {k: title for k, (title, _) in rules.items()}
-    TITLES["other"] = "Something's wrong"
-    RULES = {k: t.upper() for k, t in TITLES.items() if k != "other"}
-    rules_text = "\n".join(f"- {k}: {what}" for k, (_, what) in rules.items())
-    body = (f"Alert only for these, and only when it is clearly visible:\n{rules_text}\n\n{PROFILE['normal']}\n"
-            "Never identify or describe a person beyond the action itself: no clothing, age, gender, ethnicity or names.\n\n"
-            "Reply with JSON only:\n"
-            '{"alert": true or false, "rule": "<one rule name above, or none>", "t": <the t= time where it first '
-            'shows, or 0>, "confidence": <0 to 1>, "why": "<at most 12 words on what happened>"}')
-    PROMPTS = {
-        "video": f"{PROFILE['context']}\n\nYou get a short video clip from one camera. Every frame shows its time as "
-                 f"t=...s in the top-left corner.\n\n{body}",
-        "frames": f"{PROFILE['context']}\n\nYou get one image: a 2x2 contact sheet of consecutive frames from one "
-                  f"camera, read left to right, then top to bottom. Each frame shows its time as t=...s.\n\n{body}",
-    }
-    SCHEMA = {
-        "type": "object",
-        "properties": {
-            "alert": {"type": "boolean"},
-            "rule": {"type": "string", "enum": [*rules, "none"]},
-            "t": {"type": "number"},
-            "confidence": {"type": "number"},
-            "why": {"type": "string"},
-        },
-        "required": ["alert", "rule", "t", "confidence", "why"],
-        "additionalProperties": False,
-    }
+        config.CAMERA = pk["camera"]
 
 
 set_profile(config.PROFILE)
+
+
+def ready():
+    """Can we ask the model? A local Ollama, or an OpenRouter key."""
+    return config.PROVIDER == "ollama" or bool(config.OPENROUTER_KEY)
 
 
 def auth():
@@ -210,7 +230,7 @@ def count_call():
 
 def free_quota(max_age=60):
     """OpenRouter's own count of today's free-model calls: {"used", "limit", "remaining"}, cached."""
-    if not config.OPENROUTER_KEY:
+    if config.PROVIDER == "ollama" or not config.OPENROUTER_KEY:
         return None
     if time.time() - _free["at"] > max_age:
         status, body, _ = http("GET", f"{OPENROUTER}/key", headers=auth(), timeout=6)
@@ -222,7 +242,7 @@ def free_quota(max_age=60):
 
 # ---------------------------------------------------------------- the call
 
-def ask(media, kind, times, camera):
+def ask(media, kind, times, camera, pk):
     """kind: "video" (mp4 bytes) or "frames" (a JPEG contact sheet). Returns (status, body, headers, seconds)."""
     span = f"t = {times[0]:.1f} to {times[-1]:.1f} s" if times else "unknown times"
     if kind == "video":
@@ -232,7 +252,7 @@ def ask(media, kind, times, camera):
     payload = {
         "model": config.MODEL,
         "messages": [
-            {"role": "system", "content": PROMPTS[kind]},
+            {"role": "system", "content": pk["prompts"][kind]},
             {"role": "user", "content": [{"type": "text", "text": f"Camera: {camera}. Footage {span}. Is there an incident?"}, part]},
         ],
         "temperature": 0.1,
@@ -242,13 +262,39 @@ def ask(media, kind, times, camera):
         payload["reasoning"] = {"effort": "none"}
     if config.STRUCTURED:
         payload["response_format"] = {"type": "json_schema",
-                                      "json_schema": {"name": "shop_alert", "strict": True, "schema": SCHEMA}}
+                                      "json_schema": {"name": "camera_alert", "strict": True, "schema": pk["schema"]}}
     started = time.time()
     status, body, headers = http("POST", f"{OPENROUTER}/chat/completions", payload, auth(), timeout=120)
     return status, body, headers, time.time() - started
 
 
-def parse_verdict(text):
+def ask_ollama(media, kind, times, camera, pk):
+    """The same question to a local Ollama (native /api/chat), with the JSON schema as the output format."""
+    span = f"t = {times[0]:.1f} to {times[-1]:.1f} s" if times else "unknown times"
+    payload = {
+        "model": config.OLLAMA_MODEL,
+        "messages": [
+            {"role": "system", "content": pk["prompts"]["frames"]},
+            {"role": "user", "content": f"Camera: {camera}. Footage {span}. Is there an incident?",
+             "images": [base64.b64encode(media).decode()]},
+        ],
+        "stream": False,
+        "format": pk["schema"] if config.STRUCTURED else "json",
+        "options": {"temperature": 0.1},
+    }
+    if config.REASONING == "off":
+        payload["think"] = False
+    started = time.time()
+    status, body, headers = http("POST", f"{config.OLLAMA_URL}/api/chat", payload, timeout=600)
+    if status == 200 and isinstance(body.get("message"), dict):  # reshape like an OpenAI-style answer
+        body = {"choices": [{"message": {"content": body["message"].get("content")}}],
+                "usage": {"prompt_tokens": body.get("prompt_eval_count"), "completion_tokens": body.get("eval_count")}}
+    elif status == 0:
+        body = {"error": {"message": f"Ollama isn't reachable at {config.OLLAMA_URL} (is `ollama serve` running?)"}}
+    return status, body, headers, time.time() - started
+
+
+def parse_verdict(text, rules):
     match = re.search(r"\{.*\}", text or "", re.S)
     try:
         v = json.loads(match.group(0)) if match else None
@@ -265,27 +311,31 @@ def parse_verdict(text):
 
     alert = bool(v.get("alert"))
     rule = str(v.get("rule") or "none")
-    if rule not in RULES:
+    if rule not in rules:
         rule = "other" if alert else "none"
     return {"alert": alert, "rule": rule, "t": num(v.get("t")),
             "confidence": max(0.0, min(1.0, num(v.get("confidence"), 0.5))), "why": str(v.get("why") or "")[:140]}
 
 
-def check(media, kind, times, camera):
+def check(media, kind, times, camera, profile=None):
     """One budgeted Nemotron check. Returns {"ok": True, "verdict", "latency", "call"} or {"ok": False, ...}."""
-    if not config.OPENROUTER_KEY:
-        return {"ok": False, "error": "no_key", "message": "OPENROUTER_API_KEY is missing in .env"}
-    if used_today() >= config.DAILY_CAP:
-        return {"ok": False, "error": "daily_cap", "message": f"Daily budget used ({config.DAILY_CAP} calls). It resets at 05:30 IST."}
-    quota = free_quota()
-    if quota and quota.get("remaining") is not None and quota["remaining"] <= 0:
-        return {"ok": False, "error": "daily_cap", "message": "OpenRouter says today's free calls are used up."}
-    call_no = count_call()  # counted before the call: a failed call can still use quota
-    status, body, headers, latency = ask(media, kind, times, camera)
+    pk = pack(profile or PROFILE_NAME)
+    local = config.PROVIDER == "ollama"
+    if not local:  # the hosted free tier has a daily budget; a local model doesn't
+        if not config.OPENROUTER_KEY:
+            return {"ok": False, "error": "no_key", "message": "OPENROUTER_API_KEY is missing in .env"}
+        if used_today() >= config.DAILY_CAP:
+            return {"ok": False, "error": "daily_cap", "message": f"Daily budget used ({config.DAILY_CAP} calls). It resets at 05:30 IST."}
+        quota = free_quota()
+        if quota and quota.get("remaining") is not None and quota["remaining"] <= 0:
+            return {"ok": False, "error": "daily_cap", "message": "OpenRouter says today's free calls are used up."}
+    call_no = None if local else count_call()  # counted before the call: a failed call can still use quota
+    status, body, headers, latency = (ask_ollama if local else ask)(media, kind, times, camera, pk)
     _free["at"] = 0  # re-read OpenRouter's count next time
     config.DATA.mkdir(exist_ok=True)
     with open(config.DATA / "calls.jsonl", "a") as f:
-        f.write(json.dumps({"at": datetime.now().isoformat(timespec="seconds"), "model": config.MODEL, "input": kind,
+        f.write(json.dumps({"at": datetime.now().isoformat(timespec="seconds"),
+                            "model": config.OLLAMA_MODEL if local else config.MODEL, "input": kind,
                             "bytes": len(media), "times": times, "latency": round(latency, 2), "status": status,
                             "usage": body.get("usage"), "error": None if status == 200 else error_text(body, status)}) + "\n")
     choice = (body.get("choices") or [{}])[0]
@@ -293,7 +343,7 @@ def check(media, kind, times, camera):
         return {"ok": False, "error": "rate_limited" if status == 429 else "model_error", "status": status,
                 "message": error_text(body, status), "retry_after": headers.get("Retry-After"), "call": call_no}
     content = (choice.get("message") or {}).get("content")
-    verdict = parse_verdict(content)
+    verdict = parse_verdict(content, pk["rules"])
     if verdict is None:
         return {"ok": False, "error": "bad_json", "message": f"Couldn't read the answer: {str(content)[:160]!r}", "call": call_no}
     return {"ok": True, "verdict": verdict, "latency": round(latency, 2), "call": call_no, "usage": body.get("usage")}
